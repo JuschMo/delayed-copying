@@ -49,6 +49,9 @@
     .index{ color:var(--muted) }
     .kbd{ font-variant-numeric: tabular-nums; background:#0b1220; border:1px solid rgba(255,255,255,.15); padding:2px 6px; border-radius:6px }
 
+    /* Listening-only visual: blend text into background */
+    .invisible-ink { color: var(--bg) !important; text-shadow: none !important; }
+
     @media (max-width:600px){ .sentence{ min-height: 5lh } }
   </style>
 </head>
@@ -57,7 +60,7 @@
     <!-- Setup screen -->
     <section id="setup" class="card">
       <h1>Sentence Trainer</h1>
-      <p class="muted">Paste or type one sentence per line. Choose a difficulty or custom timers, then click <strong>OK</strong>. Flow: <em>Show</em> → <em>Blank</em> → <strong>WRITE</strong> → <em>Show again</em> → <em>Next sentence</em>. Use <span class="kbd">Space</span> for Next.</p>
+      <p class="muted">Paste or type one sentence per line. Choose a difficulty or custom timers, then click <strong>OK</strong>. Flow: <em>Show</em> → <em>Blank</em> → <strong>GO</strong> → <em>Show again</em> → <em>Next sentence</em>. Use <span class="kbd">Space</span> for Next.</p>
       <textarea id="input" placeholder="Type one sentence per line…&#10;Ich spiele gern Fußball.&#10;Am Wochenende besuche ich meine Großeltern.&#10;…"></textarea>
 
       <!-- Difficulty presets -->
@@ -89,6 +92,14 @@
           <label>Pitch <input type="range" id="pitch" min="0.5" max="2" step="0.1" value="1" disabled></label>
           <button id="testVoice" class="btn" disabled>Test voice</button>
         </div>
+      </div>
+
+      <div class="card" style="margin-top:14px">
+        <h2 style="margin:0 0 8px;font-size:18px">Exam layout</h2>
+        <label class="row" style="gap:8px;align-items:center">
+          <input type="checkbox" id="listeningOnly"/>
+          <span>Listening only (hide text during memorisation). <span class="muted">Note: hides by blending text into background; TTS still plays.</span></span>
+        </label>
       </div>
 
       <div class="row" style="margin-top:12px">
@@ -142,18 +153,16 @@
     const replayBtn = document.getElementById('replayBtn');
     const muteBtn = document.getElementById('muteBtn');
 
-    let sentences = [];
-    let i = 0;                 // current sentence index
-    let phase = 'idle';        // 'show'|'blank'|'write'|'again'|'idle'
-    let timer = null;          // interval id
-    let t0 = 0;                // start time
-
     // Timers
     const showSec = document.getElementById('showSec');
     const blankSec = document.getElementById('blankSec');
     const currentPreset = document.getElementById('currentPreset');
     const saveTiming = document.getElementById('saveTiming');
     let showMs = 5000, blankMs = 3000;
+
+    // Listening-only
+    const listeningOnly = document.getElementById('listeningOnly');
+    let listening = false;
 
     // TTS
     const ttsEnabled = document.getElementById('ttsEnabled');
@@ -163,10 +172,14 @@
     const testVoiceBtn = document.getElementById('testVoice');
     const tts = { enabled:false, muted:false, voice:null, rate:1, pitch:1, volume:1 };
 
+    let sentences = []; let i = 0; let phase = 'idle'; let timer = null; let t0 = 0;
+
     // ====== Helpers ======
     function parseSentences(text){
-      // Robust split for Windows (\r\n), Unix (\n), and old Mac (\r)
-      return text.split(/\r?\n|\r/).map(s=>s.trim()).filter(Boolean);
+      return text.split(/
+?
+|
+/).map(s=>s.trim()).filter(Boolean);
     }
     function updateIndex(){ indexLabel.textContent = `Sentence ${i+1} / ${sentences.length}`; }
     function setCountdownLabel(txt, cls){ countdown.textContent = txt; countdown.className = `count badge ${cls}`; }
@@ -192,78 +205,54 @@
       if(saved){ voiceSelect.value = saved; tts.voice = voices.find(v=>v.name===saved)||null; }
       else if(voices.length){ const pref = voices.find(v=>/^de|^en/i.test(v.lang)) || voices[0]; tts.voice = pref; voiceSelect.value = pref?.name || ''; }
     }
-    function setTTSControlsEnabled(on){ voiceSelect.disabled=!on; rateInput.disabled=!on; pitchInput.disabled=!on; testVoiceBtn.disabled=!on; muteBtn.disabled=!on; replayBtn.disabled=!on; }
-    function speak(text){
-      if(!tts.enabled || tts.muted || !('speechSynthesis' in window)) return;
-      try{ window.speechSynthesis.cancel(); }catch(e){}
-      const u = new SpeechSynthesisUtterance(text); if(tts.voice) u.voice = tts.voice; u.rate=tts.rate; u.pitch=tts.pitch; u.volume=tts.volume; window.speechSynthesis.speak(u);
-    }
+    function setTTSControlsEnabled(on){ [voiceSelect, rateInput, pitchInput, testVoiceBtn, muteBtn, replayBtn].forEach(el=>el.disabled=!on); }
+    function speak(text){ if(!tts.enabled || tts.muted || !('speechSynthesis' in window)) return; try{ window.speechSynthesis.cancel(); }catch(e){} const u=new SpeechSynthesisUtterance(text); if(tts.voice) u.voice=tts.voice; u.rate=tts.rate; u.pitch=tts.pitch; u.volume=tts.volume; window.speechSynthesis.speak(u); }
     function stopSpeak(){ if('speechSynthesis' in window) try{ window.speechSynthesis.cancel(); }catch(e){} }
     function speakCurrent(){ if(sentences[i]) speak(sentences[i]); }
 
     // ====== Flow ======
-    function gotoViewer(list){
-      sentences = list; i = 0; setup.style.display='none'; viewer.style.display='block'; startSentenceCycle();
-    }
+    function gotoViewer(list){ sentences=list; i=0; setup.style.display='none'; viewer.style.display='block'; startSentenceCycle(); }
+
+    function showSentenceText(on){ stage.classList.toggle('invisible-ink', !on); }
 
     function startSentenceCycle(){
       if(i>=sentences.length){ stage.innerHTML = `<div class="write">All done ✅</div>`; setCountdownLabel('Complete','idle'); nextBtn.disabled=true; animateBar(0); stopSpeak(); return; }
       updateIndex();
-      phase = 'show'; stage.textContent = sentences[i]; stopSpeak(); speakCurrent(); nextBtn.disabled = true;
+      // SHOW phase
+      phase='show'; stage.textContent = sentences[i]; showSentenceText(!listening); stopSpeak(); speakCurrent(); nextBtn.disabled = true;
       startTimer(showMs, 'Show', 'show', ()=>{
-        phase = 'blank'; stage.textContent = ''; stopSpeak();
+        // BLANK phase
+        phase='blank'; stage.textContent=''; showSentenceText(true); stopSpeak();
         startTimer(blankMs, 'Blank', 'blank', ()=>{
-          phase = 'write'; stage.innerHTML = `<div class="write">WRITE</div>`; setCountdownLabel('Wait for Next','idle'); animateBar(0);
-          nextBtn.disabled = false; // allow revealing again
+          // WRITE phase (visual signal only)
+          phase='write'; stage.innerHTML = `<div class="write">WRITE</div>`; setCountdownLabel('Wait for Next','idle'); animateBar(0); nextBtn.disabled=false; showSentenceText(true);
         });
       });
     }
 
     function handleNext(){
-      if(phase === 'write'){
-        phase = 'again'; stage.textContent = sentences[i]; setCountdownLabel('Repeat shown','idle'); animateBar(0); stopSpeak(); speakCurrent(); nextBtn.disabled = false;
-      } else if(phase === 'again'){
-        i++; startSentenceCycle();
-      } else if(phase === 'idle'){
-        startSentenceCycle();
-      }
+      if(phase==='write'){
+        // Reveal again
+        phase='again'; stage.textContent = sentences[i]; showSentenceText(!listening); setCountdownLabel('Repeat shown','idle'); animateBar(0); stopSpeak(); speakCurrent(); nextBtn.disabled=false;
+      } else if(phase==='again'){ i++; startSentenceCycle(); }
     }
 
     // ====== Events ======
-    startBtn.addEventListener('click', ()=>{
-      const list = parseSentences(input.value);
-      if(!list.length){ alert('Please add at least one sentence.'); return; }
-      try{ localStorage.setItem('sentence-trainer:last', JSON.stringify(list)); }catch(e){}
-      gotoViewer(list);
-    });
-
-    demoBtn.addEventListener('click', ()=>{
-      input.value = [
-        'Ich mag Mathe, weil es logisch ist.',
-        'Am Montag habe ich Deutsch.',
-        'Wir spielen Fußball nach der Schule.',
-        'Im Sommer fahre ich nach Spanien.'
-      ].join('\n');
-    });
-
+    startBtn.addEventListener('click', ()=>{ const list=parseSentences(input.value); if(!list.length){ alert('Please add at least one sentence.'); return; } try{ localStorage.setItem('sentence-trainer:last', JSON.stringify(list)); }catch(e){} listening = listeningOnly.checked; gotoViewer(list); });
+    demoBtn.addEventListener('click', ()=>{ input.value=['Ich mag Mathe, weil es logisch ist.','Am Montag habe ich Deutsch.','Wir spielen Fußball nach der Schule.','Im Sommer fahre ich nach Spanien.'].join('
+'); });
     clearBtn.addEventListener('click', ()=>{ input.value=''; input.focus(); });
 
     nextBtn.addEventListener('click', handleNext);
     restartBtn.addEventListener('click', ()=>{ clearInterval(timer); stopSpeak(); startSentenceCycle(); });
     backBtn.addEventListener('click', ()=>{ clearInterval(timer); stopSpeak(); viewer.style.display='none'; setup.style.display='block'; nextBtn.disabled=true; stage.textContent=''; animateBar(0); });
-
     replayBtn.addEventListener('click', ()=>{ stopSpeak(); speakCurrent(); });
 
-    // Keyboard: Space for Next (not when typing)
-    window.addEventListener('keydown', (e)=>{
-      if(e.code==='Space'){
-        const a=document.activeElement; if(a && (a.tagName==='TEXTAREA'||a.tagName==='INPUT')) return;
-        e.preventDefault(); if(viewer.style.display==='block' && !nextBtn.disabled) handleNext();
-      }
-    });
+    // Keyboard
+    window.addEventListener('keydown', (e)=>{ if(e.code==='Space'){ const a=document.activeElement; if(a&&(a.tagName==='TEXTAREA'||a.tagName==='INPUT')) return; e.preventDefault(); if(viewer.style.display==='block' && !nextBtn.disabled) handleNext(); } });
 
     // TTS controls
-    ttsEnabled.addEventListener('change', ()=>{ tts.enabled = ttsEnabled.checked; setTTSControlsEnabled(tts.enabled); localStorage.setItem('sentence-trainer:tts', tts.enabled?'1':'0'); if(!tts.enabled) stopSpeak(); });
+    ttsEnabled.addEventListener('change', ()=>{ tts.enabled=ttsEnabled.checked; setTTSControlsEnabled(tts.enabled); localStorage.setItem('sentence-trainer:tts', tts.enabled?'1':'0'); if(!tts.enabled) stopSpeak(); });
     voiceSelect.addEventListener('change', ()=>{ const name=voiceSelect.value; const list=(window.speechSynthesis&&window.speechSynthesis.getVoices())||[]; tts.voice=list.find(v=>v.name===name)||null; localStorage.setItem('sentence-trainer:voice', name||''); });
     rateInput.addEventListener('input', ()=>{ tts.rate=parseFloat(rateInput.value)||1; localStorage.setItem('sentence-trainer:rate', String(tts.rate)); });
     pitchInput.addEventListener('input', ()=>{ tts.pitch=parseFloat(pitchInput.value)||1; localStorage.setItem('sentence-trainer:pitch', String(tts.pitch)); });
@@ -274,18 +263,14 @@
     function applyPreset(name){ let s=5,b=3,label='Standard'; if(name==='beginner'){s=8;b=5;label='Beginner';} if(name==='advanced'){s=3;b=2;label='Advanced';} showSec.value=s; blankSec.value=b; currentPreset.textContent=`Current: ${label}`; persistTiming(); loadTiming(); }
     document.querySelectorAll('[data-preset]').forEach(btn=>btn.addEventListener('click', ()=>applyPreset(btn.dataset.preset)));
     function persistTiming(){ localStorage.setItem('sentence-trainer:show', showSec.value); localStorage.setItem('sentence-trainer:blank', blankSec.value); }
-    function loadTiming(){
-      const s = parseInt(localStorage.getItem('sentence-trainer:show')||showSec.value,10);
-      const b = parseInt(localStorage.getItem('sentence-trainer:blank')||blankSec.value,10);
-      showSec.value = s; blankSec.value = b; // reflect stored values in UI
-      showMs = Math.max(1,s)*1000; blankMs = Math.max(1,b)*1000;
-    }
+    function loadTiming(){ const s=parseInt(localStorage.getItem('sentence-trainer:show')||showSec.value,10); const b=parseInt(localStorage.getItem('sentence-trainer:blank')||blankSec.value,10); showSec.value=s; blankSec.value=b; showMs=Math.max(1,s)*1000; blankMs=Math.max(1,b)*1000; }
     saveTiming.addEventListener('click', ()=>{ persistTiming(); loadTiming(); currentPreset.textContent='Current: Custom'; });
 
     // Init on load
     (function init(){
       try{
-        const last = JSON.parse(localStorage.getItem('sentence-trainer:last')||'null'); if(Array.isArray(last) && last.length){ input.value = last.join('\n'); }
+        const last = JSON.parse(localStorage.getItem('sentence-trainer:last')||'null'); if(Array.isArray(last) && last.length){ input.value = last.join('
+'); }
         tts.enabled = localStorage.getItem('sentence-trainer:tts')==='1'; tts.rate=parseFloat(localStorage.getItem('sentence-trainer:rate')||'1')||1; tts.pitch=parseFloat(localStorage.getItem('sentence-trainer:pitch')||'1')||1; tts.muted = localStorage.getItem('sentence-trainer:muted')==='1';
         ttsEnabled.checked=tts.enabled; rateInput.value=tts.rate; pitchInput.value=tts.pitch; setTTSControlsEnabled(tts.enabled); muteBtn.textContent = tts.muted ? '🔈' : '🔊';
         if('speechSynthesis' in window){ loadVoices(); window.speechSynthesis.onvoiceschanged = loadVoices; } else { document.getElementById('ttsSupportNote').innerHTML = 'Your browser does not support Text‑to‑Speech.'; }
@@ -296,11 +281,26 @@
     // ====== Self-tests (console only) ======
     (function tests(){
       const cases=[
-        {name:'LF only',  input:'A\nB\n\n C ', expected:['A','B','C']},
-        {name:'CRLF',     input:'A\r\nB\r\n\r\nC', expected:['A','B','C']},
-        {name:'CR only',  input:'A\rB\r\rC', expected:['A','B','C']},
-        {name:'Trim & blanks', input:'  A  \n\n  B  \n\n', expected:['A','B']},
-        {name:'Trailing newline', input:'A\nB\n', expected:['A','B']}
+        {name:'LF only',  input:'A
+B
+
+ C ', expected:['A','B','C']},
+        {name:'CRLF',     input:'A
+B
+
+C', expected:['A','B','C']},
+        {name:'CR only',  input:'A
+B
+
+C', expected:['A','B','C']},
+        {name:'Trim & blanks', input:'  A  
+
+  B  
+
+', expected:['A','B']},
+        {name:'Trailing newline', input:'A
+B
+', expected:['A','B']}
       ];
       let pass=0; for(const t of cases){ const out=parseSentences(t.input); const ok=JSON.stringify(out)===JSON.stringify(t.expected); console[ok?'log':'error'](`[parse] ${t.name}: ${ok?'PASS':'FAIL'}`, {out, expected:t.expected}); if(ok) pass++; }
       console.log(`[tests] ${pass}/${cases.length} parseSentences tests passed`);
