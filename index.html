@@ -284,14 +284,14 @@
         // Blank
         stage.textContent=''; stopSpeak();
         startTimer(blankMs,'Blank','blank',()=>{
- // Go phase (no writing UI)
+// Go phase (no writing UI; wait for Next)
+phase = 'write';              // so handleNext knows we're in the first post-Go click
+lastChecked = true;           // bypass the old "Please press Check first" guard
+hideWriteUI();                // no input box
 stage.innerHTML = `<div class="write">GO</div>`;
 setCountdownLabel('Say it aloud!','idle');
 animateBar(0);
-setTimeout(() => {
-  i++;
-  startSentenceCycle();
-}, 2000); // shows "Go" for 2 seconds before next sentence
+nextBtn.disabled = false;     // allow Space / Next click to proceed
         });
       });
     }
@@ -408,5 +408,6 @@ setTimeout(() => {
   </script>
 </body>
 </html>
+
 
 
